@@ -36,7 +36,6 @@ Deno.serve(async (req: Request) => {
   try {
     log("START", "Image generation request received");
 
-    // --- 1. Authenticate ---
     const supabaseUrl = Deno.env.get("SUPABASE_URL") as string;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") as string;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY") as string;
@@ -70,9 +69,8 @@ Deno.serve(async (req: Request) => {
     const userId = userData.user.id;
     log("AUTH", `Authenticated user: ${userId}`);
 
-    // --- 2. Parse and validate request body ---
     const body = await req.json();
-    const { imageId, prompt, style, imageType, sourcePhotoUrl } = body;
+    const { imageId, prompt, style, imageType } = body;
 
     if (!imageId) {
       return errorResponse("Image ID is required.", 400, "validation");
@@ -83,7 +81,6 @@ Deno.serve(async (req: Request) => {
 
     log("VALIDATION", "Request validated", { imageId, promptLength: prompt.length, style, imageType });
 
-    // --- 3. Verify the image record belongs to this user ---
     const { data: imageRecord, error: dbError } = await supabase
       .from("studio_images")
       .select("*")
@@ -98,26 +95,15 @@ Deno.serve(async (req: Request) => {
       return errorResponse("Image project not found. It may have been deleted.", 404, "db-fetch");
     }
     if (imageRecord.user_id !== userId) {
-      log("AUTH", "User does not own this image record", { imageRecordUserId: imageRecord.user_id, requestUserId: userId });
       return errorResponse("You don't have permission to generate this image.", 403, "auth");
     }
 
     log("DB", "Image record verified", { imageId, status: imageRecord.status });
 
-    // --- 4. Update status to processing ---
-    const { error: statusUpdateError } = await supabase
-      .from("studio_images")
-      .update({ status: "processing" })
-      .eq("id", imageId);
+    await supabase.from("studio_images").update({ status: "processing" }).eq("id", imageId);
 
-    if (statusUpdateError) {
-      log("DB", "Could not update status to processing", { statusUpdateError });
-    }
-
-    // --- 5. Check for OpenAI API key ---
     const openaiKey = Deno.env.get("OPENAI_API_KEY");
     if (!openaiKey) {
-      // Revert status and return a clear message
       await supabase.from("studio_images").update({ status: "draft" }).eq("id", imageId);
       log("CONFIG", "OPENAI_API_KEY not configured");
       return errorResponse(
@@ -127,63 +113,120 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // --- 6. Build the DALL-E prompt ---
+    // Build a clean, single-line prompt — strip any newlines from the frontend
+    const cleanPrompt = prompt.replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
     const typeLabel = imageType ? imageType.replace(/_/g, " ") : "family heritage artwork";
+
+    // Avoid duplicating style info — the frontend may already include "Style: X" in the prompt
+    const styleAlreadyIncluded = style && cleanPrompt.toLowerCase().includes(style.toLowerCase());
+    const styleSuffix = style && !styleAlreadyIncluded ? ` Artistic style: ${style}.` : "";
+
     const fullPrompt = [
       `Create a ${typeLabel}.`,
-      prompt.trim(),
-      style ? `Artistic style: ${style}.` : "",
+      cleanPrompt,
+      styleSuffix,
       "Warm, elegant, respectful tone suitable for a family heritage archive.",
     ].filter(Boolean).join(" ");
 
-    log("PROMPT", "Built DALL-E prompt", { fullPrompt: fullPrompt.slice(0, 200) });
+    // Truncate to DALL-E 3's 4000 character limit
+    const truncatedPrompt = fullPrompt.slice(0, 4000);
 
-    // --- 7. Call DALL-E API ---
+    log("PROMPT", "Built DALL-E prompt", { fullPrompt: truncatedPrompt.slice(0, 200) });
+
+    // Call DALL-E 3 API — use "url" response format (more reliable than b64_json)
     log("OPENAI", "Calling DALL-E 3 API...");
-    const aiResponse = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "dall-e-3",
-        prompt: fullPrompt,
-        n: 1,
-        size: "1024x1024",
-        quality: "standard",
-        response_format: "b64_json",
-      }),
-    });
 
-    if (!aiResponse.ok) {
+    let aiResponse: Response | null = null;
+    let lastError: string | null = null;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      log("OPENAI", `Attempt ${attempt}/3`);
+
+      aiResponse = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "dall-e-3",
+          prompt: truncatedPrompt,
+          n: 1,
+          size: "1024x1024",
+          quality: "standard",
+          response_format: "url",
+        }),
+      });
+
+      if (aiResponse.ok) {
+        log("OPENAI", `DALL-E 3 succeeded on attempt ${attempt}`);
+        break;
+      }
+
       const errText = await aiResponse.text();
-      log("OPENAI", "DALL-E API returned error", { status: aiResponse.status, errText });
+      lastError = errText;
+      let errStatus = aiResponse.status;
+      log("OPENAI", `Attempt ${attempt} failed`, { status: errStatus, errText: errText.slice(0, 500) });
+
+      // Don't retry on 400 (bad prompt) or 401/403 (auth issues)
+      if (errStatus === 400 || errStatus === 401 || errStatus === 403) {
+        break;
+      }
+
+      // Wait before retrying (exponential backoff)
+      if (attempt < 3) {
+        const waitMs = attempt * 2000;
+        log("OPENAI", `Waiting ${waitMs}ms before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
+    if (!aiResponse || !aiResponse.ok) {
+      const status = aiResponse?.status ?? 500;
+      log("OPENAI", "All attempts failed", { status, lastError: lastError?.slice(0, 500) });
 
       await supabase.from("studio_images").update({ status: "error" }).eq("id", imageId);
 
       let userMessage = "The AI image service returned an error.";
-      if (aiResponse.status === 429) userMessage = "The AI image service is busy right now. Please wait a moment and try again.";
-      else if (aiResponse.status === 400) userMessage = "The prompt was rejected by the AI. Please rephrase your description and try again.";
-      else if (aiResponse.status >= 500) userMessage = "The AI image service is temporarily unavailable. Please try again shortly.";
+      if (status === 429) {
+        userMessage = "The AI image service is busy right now. Please wait a moment and try again.";
+      } else if (status === 400) {
+        userMessage = "The prompt was rejected by the AI. Please rephrase your description and try again.";
+      } else if (status === 401 || status === 403) {
+        userMessage = "The AI image service is not properly configured. Please contact support.";
+      } else if (status >= 500) {
+        userMessage = "The AI image service is temporarily unavailable. Please try again shortly.";
+      }
 
       return errorResponse(userMessage, 502, "openai-api");
     }
 
     const aiData = await aiResponse.json();
-    const b64Image = aiData.data?.[0]?.b64_json;
+    const imageUrl = aiData.data?.[0]?.url;
     const revisedPrompt = aiData.data?.[0]?.revised_prompt;
 
-    if (!b64Image) {
-      log("OPENAI", "DALL-E returned no image data");
+    if (!imageUrl) {
+      log("OPENAI", "DALL-E returned no image URL");
       await supabase.from("studio_images").update({ status: "error" }).eq("id", imageId);
       return errorResponse("The AI image service returned an empty result. Please try again.", 502, "openai-parse");
     }
 
-    log("OPENAI", "DALL-E image received", { revisedPrompt: revisedPrompt?.slice(0, 100) });
+    log("OPENAI", "DALL-E image URL received", { revisedPrompt: revisedPrompt?.slice(0, 100) });
 
-    // --- 8. Upload to Supabase Storage ---
-    const imageBuffer = Uint8Array.from(atob(b64Image), (c) => c.charCodeAt(0));
+    // Download the image from the OpenAI URL
+    log("DOWNLOAD", "Downloading image from OpenAI URL...");
+    const imageDownloadRes = await fetch(imageUrl);
+
+    if (!imageDownloadRes.ok) {
+      log("DOWNLOAD", "Failed to download image", { status: imageDownloadRes.status });
+      await supabase.from("studio_images").update({ status: "error" }).eq("id", imageId);
+      return errorResponse("The image was generated but could not be downloaded. Please try again.", 502, "image-download");
+    }
+
+    const imageBuffer = new Uint8Array(await imageDownloadRes.arrayBuffer());
+    log("DOWNLOAD", "Image downloaded", { bytes: imageBuffer.length });
+
+    // Upload to Supabase Storage
     const storagePath = `${userId}/${imageId}.png`;
 
     log("STORAGE", "Uploading to Supabase Storage", { bucket: "photos", path: storagePath });
@@ -203,7 +246,6 @@ Deno.serve(async (req: Request) => {
 
     log("STORAGE", "Upload successful");
 
-    // --- 9. Get the public URL ---
     const { data: urlData } = supabase.storage.from("photos").getPublicUrl(storagePath);
     const publicUrl = urlData.publicUrl;
 
@@ -215,7 +257,6 @@ Deno.serve(async (req: Request) => {
 
     log("STORAGE", "Public URL generated", { publicUrl: publicUrl.slice(0, 80) });
 
-    // --- 10. Update the studio_images record ---
     const { error: updateError } = await supabase
       .from("studio_images")
       .update({
@@ -233,7 +274,6 @@ Deno.serve(async (req: Request) => {
 
     log("DB", "Image record updated to 'ready'");
 
-    // --- 11. Create a Media Library entry ---
     const { error: mediaError } = await supabase.from("media_library_items").insert({
       user_id: userId,
       title: imageRecord.title,
@@ -251,7 +291,6 @@ Deno.serve(async (req: Request) => {
       log("DB", "Media Library entry created");
     }
 
-    // --- 12. Log to AI job history ---
     const duration = Math.round((Date.now() - startTime) / 1000);
     await supabase.from("ai_job_history").insert({
       user_id: userId,
