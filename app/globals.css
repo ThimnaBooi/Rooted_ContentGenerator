@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Rooted — warm earthy palette (light) */
+    --background: 24 60% 97%;          /* #FFF6F1 */
+    --foreground: 20 32% 29%;          /* #5D4037 */
+
+    --card: 33 53% 89%;                /* #FCEEDB */
+    --card-foreground: 20 32% 29%;     /* #5D4037 */
+
+    --popover: 24 60% 97%;             /* #FFF6F1 */
+    --popover-foreground: 20 32% 29%;  /* #5D4037 */
+
+    --primary: 14 52% 54%;             /* #C66A4E */
+    --primary-foreground: 24 60% 97%;   /* #FFF6F1 */
+
+    --secondary: 27 46% 90%;            /* #F9EBDF */
+    --secondary-foreground: 20 32% 29%; /* #5D4037 */
+
+    --muted: 27 46% 90%;               /* #F9EBDF */
+    --muted-foreground: 20 18% 45%;    /* muted brown */
+
+    --accent: 37 78% 73%;              /* #F3C981 */
+    --accent-foreground: 20 32% 29%;   /* #5D4037 */
+
+    --destructive: 355 65% 58%;        /* #E3828C supportive */
+    --destructive-foreground: 24 60% 97%;
+
+    --border: 27 40% 84%;
+    --input: 27 40% 84%;
+    --ring: 14 52% 54%;                /* primary */
+
+    /* Supportive highlight */
+    --highlight: 351 67% 66%;          /* #E3828C */
+
+    --chart-1: 14 52% 54%;
+    --chart-2: 37 78% 73%;
+    --chart-3: 351 67% 66%;
+    --chart-4: 20 32% 29%;
+    --chart-5: 27 46% 60%;
+
+    --radius: 0.85rem;
+  }
+
+  .dark {
+    /* Rooted — dark mode (warm, not corporate) */
+    --background: 20 18% 12%;
+    --foreground: 33 53% 89%;
+
+    --card: 20 18% 16%;
+    --card-foreground: 33 53% 89%;
+
+    --popover: 20 18% 14%;
+    --popover-foreground: 33 53% 89%;
+
+    --primary: 14 52% 60%;
+    --primary-foreground: 20 18% 12%;
+
+    --secondary: 20 18% 20%;
+    --secondary-foreground: 33 53% 89%;
+
+    --muted: 20 18% 20%;
+    --muted-foreground: 27 30% 70%;
+
+    --accent: 37 60% 55%;
+    --accent-foreground: 20 18% 12%;
+
+    --destructive: 355 55% 62%;
+    --destructive-foreground: 24 60% 97%;
+
+    --border: 20 18% 24%;
+    --input: 20 18% 24%;
+    --ring: 14 52% 60%;
+
+    --highlight: 351 60% 68%;
+
+    --chart-1: 14 52% 60%;
+    --chart-2: 37 60% 55%;
+    --chart-3: 351 60% 68%;
+    --chart-4: 33 53% 89%;
+    --chart-5: 27 46% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  ::selection {
+    @apply bg-accent/40;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .bg-grain {
+    background-image: radial-gradient(rgba(93, 64, 55, 0.04) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  .shadow-soft {
+    box-shadow: 0 1px 2px rgba(93, 64, 55, 0.04), 0 8px 24px rgba(93, 64, 55, 0.06);
+  }
+  .shadow-soft-lg {
+    box-shadow: 0 2px 4px rgba(93, 64, 55, 0.05), 0 16px 40px rgba(93, 64, 55, 0.1);
+  }
+}
+
+/* Gentle entrance animation */
+@keyframes rooted-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: rooted-fade-up 0.6s ease-out both;
+}
+@keyframes rooted-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade {
+  animation: rooted-fade 0.5s ease-out both;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--accent)); }
