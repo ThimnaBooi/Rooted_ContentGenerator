@@ -15,9 +15,11 @@ import { Badge } from '@/components/ui/badge';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/components/providers/auth-provider';
 import {
   getGeneratedAudio, createGeneratedAudio, deleteGeneratedAudio, toggleAudioFavourite,
+  updateGeneratedAudio,
 } from '@/lib/media-queries';
 import {
   AUDIO_TYPES, NARRATOR_VOICES, SPEAKING_SPEEDS, SPEAKING_STYLES,
@@ -41,6 +43,7 @@ export default function CreateAudioPage() {
   const [backgroundMusic, setBackgroundMusic] = useState('none');
   const [outputLanguage, setOutputLanguage] = useState('en');
   const [generating, setGenerating] = useState(false);
+  const [sourceText, setSourceText] = useState('');
   const [previewState, setPreviewState] = useState<'idle' | 'previewing'>('idle');
 
   const load = useCallback(async () => {
@@ -64,9 +67,13 @@ export default function CreateAudioPage() {
       toast.error('Please give your audio a title first.');
       return;
     }
+    if (!sourceText.trim()) {
+      toast.error('Please provide text content to narrate.');
+      return;
+    }
     setGenerating(true);
     try {
-      await createGeneratedAudio({
+      const audio = await createGeneratedAudio({
         title: title.trim(),
         audioType,
         narratorVoice,
@@ -77,11 +84,50 @@ export default function CreateAudioPage() {
         backgroundMusic: backgroundMusic === 'none' ? undefined : backgroundMusic,
         outputLanguage,
       });
-      toast.success('Audio generation started. You will be notified when it is ready.');
+
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+
+      const res = await fetch(`${supabaseUrl}/functions/v1/generate-audio`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? supabaseAnonKey}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          audioId: audio.id,
+          title: title.trim(),
+          audioType,
+          narratorVoice,
+          speakingSpeed,
+          speakingStyle,
+          emotionalTone,
+          outputLanguage,
+          sourceText,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        toast.error(errBody.error ?? `Audio generation failed (${res.status})`);
+        await load();
+        return;
+      }
+
+      const result = await res.json();
+      if (result.error) {
+        toast.error(result.error);
+        await load();
+        return;
+      }
+
+      toast.success('Audio generated successfully!');
       setTitle('');
+      setSourceText('');
       await load();
     } catch {
-      toast.error('Could not start audio generation.');
+      toast.error('Could not generate audio. Please try again.');
     } finally {
       setGenerating(false);
     }
@@ -141,6 +187,18 @@ export default function CreateAudioPage() {
           <div className="space-y-2">
             <Label htmlFor="audio-title">Title</Label>
             <Input id="audio-title" placeholder="e.g. Grandfather's Life Story — Narrated" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="source-text">Text to narrate</Label>
+            <Textarea
+              id="source-text"
+              rows={6}
+              placeholder="Paste the text you'd like the AI to narrate — a biography, a memory, a letter, or any story from your archive."
+              value={sourceText}
+              onChange={(e) => setSourceText(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">The AI will convert this text into spoken audio using the voice and settings you choose below.</p>
           </div>
 
           <div className="space-y-2">
@@ -277,7 +335,11 @@ export default function CreateAudioPage() {
                       {AUDIO_TYPES.find((t) => t.value === audio.audio_type)?.label ?? audio.audio_type}
                       {' · '}
                       {NARRATOR_VOICES.find((v) => v.value === audio.narrator_voice)?.label ?? audio.narrator_voice}
+                      {audio.duration_seconds ? ` · ${Math.floor(audio.duration_seconds / 60)}:${String(audio.duration_seconds % 60).padStart(2, '0')}` : ''}
                     </p>
+                    {audio.public_url && audio.status === 'ready' && (
+                      <audio controls className="mt-2 h-9 w-full" src={audio.public_url} />
+                    )}
                   </div>
                   <div className="flex items-center gap-1">
                     <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => handleFavourite(audio.id, !audio.is_favourite)}>

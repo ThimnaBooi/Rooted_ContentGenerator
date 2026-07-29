@@ -16,9 +16,11 @@ import { Switch } from '@/components/ui/switch';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/components/providers/auth-provider';
 import {
   getGeneratedVideos, createGeneratedVideo, deleteGeneratedVideo, toggleVideoFavourite,
+  updateGeneratedVideo,
 } from '@/lib/media-queries';
 import {
   VIDEO_TYPES, VIDEO_THEMES, ANIMATION_STYLES, TRANSITION_STYLES,
@@ -42,6 +44,7 @@ export default function CreateVideoPage() {
   const [includeNarration, setIncludeNarration] = useState(false);
   const [includeSubtitles, setIncludeSubtitles] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [sourceText, setSourceText] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -64,9 +67,13 @@ export default function CreateVideoPage() {
       toast.error('Please give your video a title first.');
       return;
     }
+    if (!sourceText.trim()) {
+      toast.error('Please provide source content for the video.');
+      return;
+    }
     setGenerating(true);
     try {
-      await createGeneratedVideo({
+      const video = await createGeneratedVideo({
         title: title.trim(),
         videoType,
         theme,
@@ -76,11 +83,52 @@ export default function CreateVideoPage() {
         fontStyle,
         colorScheme,
       });
-      toast.success('Video generation started. You will be notified when it is ready to preview.');
+
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+
+      const res = await fetch(`${supabaseUrl}/functions/v1/generate-video`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? supabaseAnonKey}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          videoId: video.id,
+          title: title.trim(),
+          videoType,
+          theme,
+          animationStyle,
+          transitionStyle,
+          fontStyle,
+          colorScheme,
+          includeNarration: true,
+          includeSubtitles: true,
+          sourceText,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        toast.error(errBody.error ?? `Video generation failed (${res.status})`);
+        await load();
+        return;
+      }
+
+      const result = await res.json();
+      if (result.error) {
+        toast.error(result.error);
+        await load();
+        return;
+      }
+
+      toast.success('Video generated successfully!');
       setTitle('');
+      setSourceText('');
       await load();
     } catch {
-      toast.error('Could not start video generation.');
+      toast.error('Could not generate video. Please try again.');
     } finally {
       setGenerating(false);
     }
@@ -139,6 +187,18 @@ export default function CreateVideoPage() {
           <div className="space-y-2">
             <Label htmlFor="video-title">Title</Label>
             <Input id="video-title" placeholder="e.g. A Tribute to Grandmother" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="source-text">Source content</Label>
+            <Textarea
+              id="source-text"
+              rows={6}
+              placeholder="Paste the story, biography, or memory you'd like the AI to turn into a video. The AI will create scene illustrations and narration from this text."
+              value={sourceText}
+              onChange={(e) => setSourceText(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">The AI will break this into scenes, generate an illustration for each, and add narration and subtitles.</p>
           </div>
 
           <div className="space-y-2">
@@ -278,26 +338,26 @@ export default function CreateVideoPage() {
                       {VIDEO_TYPES.find((t) => t.value === video.video_type)?.label ?? video.video_type}
                       {' · '}
                       {VIDEO_THEMES.find((t) => t.value === video.theme)?.label ?? video.theme}
+                      {video.duration_seconds ? ` · ${Math.floor(video.duration_seconds / 60)}:${String(video.duration_seconds % 60).padStart(2, '0')}` : ''}
                     </p>
+                    {video.thumbnail_url && video.status === 'ready' && (
+                      <img src={video.thumbnail_url} alt={video.title} className="mt-2 h-20 w-full rounded-lg object-cover" />
+                    )}
                   </div>
                   <div className="flex items-center gap-1">
                     <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => handleFavourite(video.id, !video.is_favourite)}>
                       <Star className={cn('h-4 w-4', video.is_favourite && 'fill-accent text-accent')} />
                     </Button>
-                    {video.public_url && (
+                    {video.public_url && video.status === 'ready' && (
+                      <Button variant="ghost" size="sm" className="h-8 gap-1.5" asChild>
+                        <a href={video.public_url} target="_blank" rel="noopener noreferrer"><Play className="h-3.5 w-3.5" /> Play</a>
+                      </Button>
+                    )}
+                    {video.public_url && video.status === 'ready' && (
                       <Button variant="ghost" size="sm" className="h-8 w-8 p-0" asChild>
                         <a href={video.public_url} download><Download className="h-4 w-4" /></a>
                       </Button>
                     )}
-                    <Button variant="ghost" size="sm" className="h-8 gap-1.5">
-                      <Play className="h-3.5 w-3.5" /> Preview
-                    </Button>
-                    <Button variant="ghost" size="sm" className="h-8 gap-1.5">
-                      <RefreshCw className="h-3.5 w-3.5" /> Regenerate
-                    </Button>
-                    <Button variant="ghost" size="sm" className="h-8 gap-1.5">
-                      <Save className="h-3.5 w-3.5" /> Save to Archive
-                    </Button>
                     <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(video.id)}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
