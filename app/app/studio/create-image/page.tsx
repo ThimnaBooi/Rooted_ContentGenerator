@@ -28,7 +28,7 @@ const iconMap: Record<string, LucideIcon> = {
 
 export default function CreateImagePage() {
   const router = useRouter();
-  const { isGuest } = useAuth();
+  const { session, isGuest } = useAuth();
   const [imageType, setImageType] = useState('');
   const [prompt, setPrompt] = useState('');
   const [style, setStyle] = useState('');
@@ -36,13 +36,18 @@ export default function CreateImagePage() {
   const [sourcePath, setSourcePath] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+
   async function handleGenerate() {
     if (!imageType) { toast.error('Please select an image type.'); return; }
+    if (!prompt.trim()) { toast.error('Please describe the image you want to create.'); return; }
     setGenerating(true);
     try {
       const typeLabel = IMAGE_TYPES.find((t) => t.value === imageType)?.label || imageType;
       const fullPrompt = [prompt, style && `Style: ${style}`].filter(Boolean).join('\n');
 
+      // Step 1: Create the DB record
       const img = await createImage({
         title: `${typeLabel}`,
         image_type: imageType,
@@ -52,10 +57,42 @@ export default function CreateImagePage() {
         status: 'draft',
       });
 
-      toast.success('Image project created. AI image generation will be available when the AI image feature is enabled in your settings.');
+      // Step 2: Call the edge function to generate the image
+      const res = await fetch(`${supabaseUrl}/functions/v1/generate-image`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? supabaseAnonKey}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          imageId: img.id,
+          prompt: fullPrompt,
+          style: style || null,
+          imageType,
+          sourcePhotoUrl: sourcePhoto,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        const errMsg = errBody.error ?? `Request failed (${res.status})`;
+        toast.error(errMsg);
+        router.push(`/app/studio/images/${img.id}`);
+        return;
+      }
+
+      const result = await res.json();
+      if (result.error) {
+        toast.error(result.error);
+        router.push(`/app/studio/images/${img.id}`);
+        return;
+      }
+
+      toast.success('Artwork generated successfully!');
       router.push(`/app/studio/images/${img.id}`);
     } catch {
-      toast.error('Could not create image project.');
+      toast.error('Could not generate artwork. Please try again.');
     } finally {
       setGenerating(false);
     }

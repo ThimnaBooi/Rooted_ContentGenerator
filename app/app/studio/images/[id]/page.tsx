@@ -19,12 +19,17 @@ import {
 } from '@/components/ui/dialog';
 import { getImage, updateImage, deleteImage, toggleImageFavourite, createImage } from '@/lib/studio-queries';
 import type { StudioImage } from '@/lib/studio-types';
+import { useAuth } from '@/components/providers/auth-provider';
 import { toast } from 'sonner';
 
 export default function ImageDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const { session } = useAuth();
   const id = params.id as string;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
 
   const [image, setImage] = useState<StudioImage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,6 +39,7 @@ export default function ImageDetailPage() {
   const [editPrompt, setEditPrompt] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -118,6 +124,52 @@ export default function ImageDetailPage() {
     a.click();
   }
 
+  async function handleGenerate() {
+    if (!image || !image.prompt) {
+      toast.error('This image project has no prompt. Edit it to add a description first.');
+      return;
+    }
+    setGenerating(true);
+    try {
+      const res = await fetch(`${supabaseUrl}/functions/v1/generate-image`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? supabaseAnonKey}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          imageId: image.id,
+          prompt: image.prompt,
+          style: image.style,
+          imageType: image.image_type,
+          sourcePhotoUrl: image.source_photo_url,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        toast.error(errBody.error ?? `Image generation failed (${res.status})`);
+        return;
+      }
+
+      const result = await res.json();
+      if (result.error) {
+        toast.error(result.error);
+        return;
+      }
+
+      toast.success('Image generated successfully!');
+      // Reload the image record to show the new URL
+      const updated = await getImage(image.id);
+      if (updated) setImage(updated);
+    } catch {
+      toast.error('Could not reach the image generation service. Please try again.');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   if (loading) {
     return <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>;
   }
@@ -167,8 +219,9 @@ export default function ImageDetailPage() {
               <p className="mt-2 max-w-sm text-sm text-muted-foreground">
                 This image project has been created. AI image generation will produce the artwork when the feature is enabled in your account settings.
               </p>
-              <Button className="mt-4" onClick={() => toast.info('AI image generation will be available when the feature is enabled.')}>
-                <RefreshCw className="mr-2 h-4 w-4" />Generate image
+              <Button className="mt-4" onClick={handleGenerate} disabled={generating}>
+                <RefreshCw className={`mr-2 h-4 w-4 ${generating ? 'animate-spin' : ''}`} />
+                {generating ? 'Generating...' : 'Generate image'}
               </Button>
             </div>
           )}

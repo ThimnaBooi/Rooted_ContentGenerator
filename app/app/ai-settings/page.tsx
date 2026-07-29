@@ -134,7 +134,7 @@ export default function AISettingsPage() {
           {settingKeys.map((key) => {
             const config = AI_SETTING_LABELS[key];
             const Icon = settingIcons[key] ?? Brain;
-            const value = settings ? (settings as Record<string, boolean>)[key] : key === 'photo_analysis' || key === 'face_detection_consent' ? false : true;
+            const value = settings ? (settings as unknown as Record<string, boolean>)[key] : key === 'photo_analysis' || key === 'face_detection_consent' ? false : true;
             return (
               <div key={key} className="flex items-center justify-between gap-4 rounded-lg p-3 transition-colors hover:bg-secondary/40">
                 <div className="flex items-start gap-3">
