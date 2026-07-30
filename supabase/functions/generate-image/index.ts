@@ -133,77 +133,104 @@ Deno.serve(async (req: Request) => {
 
     log("PROMPT", "Built DALL-E prompt", { fullPrompt: truncatedPrompt.slice(0, 200) });
 
-    // Call DALL-E 3 API — use "url" response format (more reliable than b64_json)
-    log("OPENAI", "Calling DALL-E 3 API...");
+    // Try multiple models in order — DALL-E 3 first, then DALL-E 2 as fallback
+    const models = [
+      { model: "dall-e-3", size: "1024x1024", quality: "standard" },
+      { model: "dall-e-2", size: "1024x1024", quality: undefined },
+    ];
 
-    let aiResponse: Response | null = null;
+    let aiData: { data?: Array<{ url?: string; revised_prompt?: string }> } | null = null;
     let lastError: string | null = null;
+    let lastStatus = 500;
+    let succeededModel: string | null = null;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      log("OPENAI", `Attempt ${attempt}/3`);
+    for (const modelConfig of models) {
+      log("OPENAI", `Calling ${modelConfig.model} API...`);
 
-      aiResponse = await fetch("https://api.openai.com/v1/images/generations", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${openaiKey}`,
-        },
-        body: JSON.stringify({
-          model: "dall-e-3",
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        log("OPENAI", `${modelConfig.model} attempt ${attempt}/3`);
+
+        const requestBody: Record<string, unknown> = {
+          model: modelConfig.model,
           prompt: truncatedPrompt,
           n: 1,
-          size: "1024x1024",
-          quality: "standard",
+          size: modelConfig.size,
           response_format: "url",
-        }),
-      });
+        };
+        if (modelConfig.quality) {
+          requestBody.quality = modelConfig.quality;
+        }
 
-      if (aiResponse.ok) {
-        log("OPENAI", `DALL-E 3 succeeded on attempt ${attempt}`);
-        break;
+        const aiResponse = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${openaiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        if (aiResponse.ok) {
+          aiData = await aiResponse.json();
+          succeededModel = modelConfig.model;
+          log("OPENAI", `${modelConfig.model} succeeded on attempt ${attempt}`);
+          break;
+        }
+
+        const errText = await aiResponse.text();
+        lastError = errText;
+        lastStatus = aiResponse.status;
+        log("OPENAI", `${modelConfig.model} attempt ${attempt} failed`, { status: lastStatus, errText: errText.slice(0, 500) });
+
+        // Don't retry on 400 (bad prompt) or 401/403 (auth issues) — try next model instead
+        if (lastStatus === 400 || lastStatus === 401 || lastStatus === 403) {
+          break;
+        }
+
+        // Wait before retrying (exponential backoff)
+        if (attempt < 3) {
+          const waitMs = attempt * 2000;
+          log("OPENAI", `Waiting ${waitMs}ms before retry...`);
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
       }
 
-      const errText = await aiResponse.text();
-      lastError = errText;
-      let errStatus = aiResponse.status;
-      log("OPENAI", `Attempt ${attempt} failed`, { status: errStatus, errText: errText.slice(0, 500) });
+      if (aiData) break;
 
-      // Don't retry on 400 (bad prompt) or 401/403 (auth issues)
-      if (errStatus === 400 || errStatus === 401 || errStatus === 403) {
-        break;
-      }
-
-      // Wait before retrying (exponential backoff)
-      if (attempt < 3) {
-        const waitMs = attempt * 2000;
-        log("OPENAI", `Waiting ${waitMs}ms before retry...`);
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-      }
+      log("OPENAI", `${modelConfig.model} failed, trying next model...`);
     }
 
-    if (!aiResponse || !aiResponse.ok) {
-      const status = aiResponse?.status ?? 500;
-      log("OPENAI", "All attempts failed", { status, lastError: lastError?.slice(0, 500) });
+    if (!aiData) {
+      log("OPENAI", "All models failed", { lastStatus, lastError: lastError?.slice(0, 500) });
 
       await supabase.from("studio_images").update({ status: "error" }).eq("id", imageId);
 
       let userMessage = "The AI image service returned an error.";
-      if (status === 429) {
+      if (lastStatus === 429) {
         userMessage = "The AI image service is busy right now. Please wait a moment and try again.";
-      } else if (status === 400) {
+      } else if (lastStatus === 400) {
         userMessage = "The prompt was rejected by the AI. Please rephrase your description and try again.";
-      } else if (status === 401 || status === 403) {
-        userMessage = "The AI image service is not properly configured. Please contact support.";
-      } else if (status >= 500) {
+      } else if (lastStatus === 401 || lastStatus === 403) {
+        // Include the actual OpenAI error so the user can see what's wrong
+        let detail = "";
+        try {
+          const parsed = JSON.parse(lastError ?? "{}");
+          detail = parsed?.error?.message ? ` (${parsed.error.message})` : "";
+        } catch {
+          detail = lastError ? ` (${lastError.slice(0, 200)})` : "";
+        }
+        userMessage = `The AI image service rejected the API key. ${detail}Please check that the OpenAI key is valid and has image generation access.`;
+      } else if (lastStatus >= 500) {
         userMessage = "The AI image service is temporarily unavailable. Please try again shortly.";
       }
 
       return errorResponse(userMessage, 502, "openai-api");
     }
 
-    const aiData = await aiResponse.json();
     const imageUrl = aiData.data?.[0]?.url;
     const revisedPrompt = aiData.data?.[0]?.revised_prompt;
+
+    log("OPENAI", `Image URL received from ${succeededModel}`, { revisedPrompt: revisedPrompt?.slice(0, 100) });
 
     if (!imageUrl) {
       log("OPENAI", "DALL-E returned no image URL");
