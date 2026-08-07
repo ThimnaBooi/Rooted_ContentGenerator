@@ -104,7 +104,10 @@ export default function ResetPasswordPage() {
       }
       setDone(true);
       toast.success('Your password has been updated.');
-      setTimeout(() => router.replace('/app'), 1500);
+      // Sign the user out so the recovery session is cleared, then
+      // redirect to the login page for a fresh sign-in.
+      await supabase.auth.signOut();
+      setTimeout(() => router.replace('/login'), 1500);
     } catch {
       toast.error('Something went wrong. Please try again.');
     } finally {
@@ -120,7 +123,7 @@ export default function ResetPasswordPage() {
         </div>
         <h1 className="font-serif text-2xl font-semibold">Password updated</h1>
         <p className="mt-3 text-muted-foreground">
-          Your password has been changed. Taking you to your archive…
+          Your password has been changed. Taking you to sign in…
         </p>
       </div>
     );

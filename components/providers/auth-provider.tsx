@@ -60,9 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     let sub: { subscription: { unsubscribe: () => void } } | undefined;
     try {
-      sub = supabase.auth.onAuthStateChange((_event, next) => {
+      sub = supabase.auth.onAuthStateChange((event, next) => {
         (async () => {
           if (!mounted) return;
+          if (event === 'PASSWORD_RECOVERY') {
+            if (typeof window !== 'undefined') {
+              window.location.replace('/reset-password');
+            }
+            return;
+          }
           setSession(next);
           if (next) {
             setIsGuest(false);

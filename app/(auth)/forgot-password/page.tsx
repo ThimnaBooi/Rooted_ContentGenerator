@@ -28,8 +28,12 @@ export default function ForgotPasswordPage() {
     setError(undefined);
     setSubmitting(true);
     try {
+      const redirectTo =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/reset-password`
+          : undefined;
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password?type=recovery`,
+        ...(redirectTo ? { redirectTo } : {}),
       });
       if (error) {
         if (
